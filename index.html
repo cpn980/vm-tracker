@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Ledger — Portfolio Tracker</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0B0E11">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ledger">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0B0E11;
+    --surface:#12161C;
+    --surface-2:#1A1F27;
+    --border:#232933;
+    --text:#E8ECEF;
+    --text-dim:#6B7684;
+    --amber:#F0B429;
+    --gain:#16C784;
+    --loss:#EA3943;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:'Inter',sans-serif; height:100%;}
+  body{padding-bottom:40px;}
+  #app{max-width:520px; margin:0 auto; min-height:100%;}
+
+  header{display:flex; align-items:baseline; justify-content:space-between;
+    padding:22px 20px 14px;}
+  .brand{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:22px;
+    letter-spacing:0.5px;}
+  .brand span{color:var(--amber);}
+  .last-updated{font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-dim);}
+
+  .ticker-tape-wrap{overflow:hidden; border-top:1px solid var(--border);
+    border-bottom:1px solid var(--border); background:var(--surface); white-space:nowrap;}
+  .ticker-tape-wrap.empty{display:none;}
+  .ticker-tape{display:inline-block; padding:9px 0; font-family:'JetBrains Mono',monospace;
+    font-size:12px; animation:scroll-left 30s linear infinite;}
+  .ticker-tape span{margin-right:34px;}
+  .ticker-tape .up{color:var(--gain);}
+  .ticker-tape .down{color:var(--loss);}
+  @keyframes scroll-left{ from{transform:translateX(0);} to{transform:translateX(-50%);} }
+
+  .summary{padding:20px; display:flex; flex-direction:column; gap:2px;}
+  .summary-row{display:flex; justify-content:space-between; align-items:baseline;
+    font-family:'JetBrains Mono',monospace;}
+  .summary-label{font-family:'Inter',sans-serif; font-size:11px; text-transform:uppercase;
+    letter-spacing:1px; color:var(--text-dim); margin-bottom:6px;}
+  .summary-value{font-size:26px; font-weight:700;}
+  .summary-change{font-size:13px; margin-top:2px;}
+
+  .search-wrap{padding:0 20px 8px; position:relative;}
+  #searchInput{width:100%; background:var(--surface); border:1px solid var(--border);
+    border-radius:10px; padding:13px 14px; color:var(--text); font-size:15px;
+    font-family:'Inter',sans-serif; outline:none;}
+  #searchInput:focus{border-color:var(--amber);}
+  .suggestions{position:absolute; left:20px; right:20px; top:56px; background:var(--surface-2);
+    border:1px solid var(--border); border-radius:10px; overflow:hidden; z-index:20;
+    max-height:280px; overflow-y:auto; display:none;}
+  .suggestions.show{display:block;}
+  .suggestion-item{padding:11px 14px; cursor:pointer; border-bottom:1px solid var(--border);
+    display:flex; justify-content:space-between; gap:10px;}
+  .suggestion-item:last-child{border-bottom:none;}
+  .suggestion-item:active{background:var(--surface);}
+  .sug-symbol{font-family:'JetBrains Mono',monospace; font-weight:700; font-size:13px; color:var(--amber);}
+  .sug-name{font-size:12px; color:var(--text-dim); overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; flex:1; text-align:right;}
+  .search-hint{padding:6px 20px 16px; font-size:11px; color:var(--text-dim);}
+
+  .holdings{padding:0 20px; display:flex; flex-direction:column; gap:10px;}
+  .holding{background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:14px 14px; display:flex; flex-direction:column; gap:8px;}
+  .holding-top{display:flex; justify-content:space-between; align-items:flex-start;}
+  .holding-id{display:flex; flex-direction:column;}
+  .holding-symbol{font-family:'JetBrains Mono',monospace; font-weight:700; font-size:15px;}
+  .holding-name{font-size:11.5px; color:var(--text-dim); margin-top:1px; max-width:200px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .holding-remove{background:none; border:none; color:var(--text-dim); font-size:18px;
+    cursor:pointer; line-height:1; padding:2px 6px;}
+  .holding-remove:active{color:var(--loss);}
+  .holding-price{font-family:'JetBrains Mono',monospace; text-align:right;}
+  .price-main{font-size:17px; font-weight:700;}
+  .price-change{font-size:12px; margin-top:2px;}
+  .up{color:var(--gain);}
+  .down{color:var(--loss);}
+  .flat{color:var(--text-dim);}
+  .holding-bottom{display:flex; justify-content:space-between; align-items:center;
+    border-top:1px solid var(--border); padding-top:8px;}
+  .qty-row{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim);}
+  .qty-row input{width:64px; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:6px; padding:5px 7px; color:var(--text); font-family:'JetBrains Mono',monospace;
+    font-size:12px;}
+  .holding-value{font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:600;}
+  .holding.loading .price-main{color:var(--text-dim);}
+  .holding.error .price-main{color:var(--loss); font-size:12px; font-weight:500;}
+
+  .empty-state{padding:60px 30px; text-align:center; color:var(--text-dim);}
+  .empty-state .glyph{font-family:'JetBrains Mono',monospace; font-size:28px; color:var(--amber);
+    margin-bottom:10px;}
+  .empty-state p{font-size:13px; line-height:1.5; margin:0;}
+
+  .refresh-btn{position:fixed; bottom:22px; right:22px; width:52px; height:52px;
+    border-radius:50%; background:var(--amber); border:none; color:#12161C; font-size:20px;
+    box-shadow:0 4px 14px rgba(240,180,41,0.35); cursor:pointer; z-index:30;}
+  .refresh-btn:active{transform:scale(0.94);}
+  .refresh-btn.spinning{animation:spin 0.8s linear infinite;}
+  @keyframes spin{ from{transform:rotate(0deg);} to{transform:rotate(360deg);} }
+
+  footer{padding:20px; text-align:center; font-size:10.5px; color:var(--text-dim);}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">LEDGER<span>.</span></div>
+    <div class="last-updated" id="lastUpdated">—</div>
+  </header>
+
+  <div class="ticker-tape-wrap empty" id="tickerWrap">
+    <div class="ticker-tape" id="tickerTape"></div>
+  </div>
+
+  <div class="summary" id="summary" style="display:none;">
+    <div class="summary-label">Portfolio value</div>
+    <div id="summaryLines"></div>
+  </div>
+
+  <div class="search-wrap">
+    <input id="searchInput" placeholder="Add a stock — AAPL, RELIANCE.NS, ^NSEI…" autocomplete="off">
+    <div class="suggestions" id="suggestions"></div>
+  </div>
+  <div class="search-hint">US: AAPL · NSE: RELIANCE.NS · BSE: RELIANCE.BO · Indices: ^GSPC, ^NSEI, ^BSESN, ^DJI, ^FTSE, ^N225</div>
+
+  <div class="holdings" id="holdingsList"></div>
+
+  <div class="empty-state" id="emptyState">
+    <div class="glyph">＄</div>
+    <p>No stocks yet.<br>Search above to add your first holding.</p>
+  </div>
+
+  <footer>Prices via Yahoo Finance, may be delayed. Not for trading decisions.</footer>
+</div>
+
+<button class="refresh-btn" id="refreshBtn" title="Refresh prices">⟳</button>
+
+<script>
+const CURRENCY_SYMBOLS = {USD:'$', INR:'₹', GBP:'£', EUR:'€', JPY:'¥', HKD:'HK$', CNY:'¥', AUD:'A$', CAD:'C$', SGD:'S$'};
+function currSym(c){ return CURRENCY_SYMBOLS[c] || (c ? c+' ' : ''); }
+
+let holdings = []; // {symbol, name, qty, price, prevClose, currency, status}
+let saveTimer = null;
+
+async function fetchJson(url){
+  try{
+    const r = await fetch(url);
+    if(!r.ok) throw new Error('status '+r.status);
+    return await r.json();
+  }catch(e){
+    const proxied = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+    const r2 = await fetch(proxied);
+    if(!r2.ok) throw new Error('proxy status '+r2.status);
+    return await r2.json();
+  }
+}
+
+async function searchSymbols(q){
+  if(!q.trim()) return [];
+  const url = 'https://query1.finance.yahoo.com/v1/finance/search?q=' + encodeURIComponent(q) + '&quotesCount=8&newsCount=0';
+  try{
+    const data = await fetchJson(url);
+    return (data.quotes || []).filter(x=>x.symbol).map(x=>({
+      symbol: x.symbol,
+      name: x.shortname || x.longname || x.symbol,
+      exch: x.exchange || ''
+    }));
+  }catch(e){ return []; }
+}
+
+async function fetchQuote(symbol){
+  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) + '?interval=1d&range=1d';
+  const data = await fetchJson(url);
+  const result = data.chart && data.chart.result && data.chart.result[0];
+  if(!result) throw new Error('no data');
+  const meta = result.meta;
+  return {
+    price: meta.regularMarketPrice,
+    prevClose: meta.chartPreviousClose ?? meta.previousClose,
+    currency: meta.currency,
+    exchName: meta.exchangeName,
+    name: meta.longName || meta.shortName || symbol
+  };
+}
+
+function loadHoldings(){
+  try{
+    const raw = localStorage.getItem('ledger_holdings');
+    if(raw){ holdings = JSON.parse(raw); }
+  }catch(e){ holdings = []; }
+  render();
+  refreshAll();
+}
+
+function persist(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(()=>{
+    try{
+      localStorage.setItem('ledger_holdings', JSON.stringify(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty}))));
+    }catch(e){ console.error('save failed', e); }
+  }, 250);
+}
+
+function isIndex(symbol){ return symbol.startsWith('^'); }
+
+function fmtNum(n, decimals){
+  if(n === undefined || n === null || isNaN(n)) return '—';
+  return n.toLocaleString(undefined, {minimumFractionDigits:decimals, maximumFractionDigits:decimals});
+}
+
+async function refreshOne(h){
+  h.status = 'loading';
+  render();
+  try{
+    const q = await fetchQuote(h.symbol);
+    h.price = q.price;
+    h.prevClose = q.prevClose;
+    h.currency = q.currency;
+    if(!h.name || h.name === h.symbol) h.name = q.name;
+    h.status = 'ok';
+  }catch(e){
+    h.status = 'error';
+  }
+  render();
+}
+
+async function refreshAll(){
+  if(holdings.length === 0) return;
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('spinning');
+  await Promise.all(holdings.map(h => refreshOne(h)));
+  btn.classList.remove('spinning');
+  document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  persist();
+}
+
+function addHolding(symbol, name){
+  symbol = symbol.trim().toUpperCase();
+  if(!symbol) return;
+  if(holdings.find(h => h.symbol === symbol)) return;
+  const h = {symbol, name: name || symbol, qty: 1, status:'loading'};
+  holdings.push(h);
+  render();
+  persist();
+  refreshOne(h);
+  document.getElementById('searchInput').value = '';
+  hideSuggestions();
+}
+
+function removeHolding(symbol){
+  holdings = holdings.filter(h => h.symbol !== symbol);
+  render();
+  persist();
+}
+
+function updateQty(symbol, qty){
+  const h = holdings.find(h => h.symbol === symbol);
+  if(h){ h.qty = Math.max(0, parseFloat(qty) || 0); render(); persist(); }
+}
+
+function render(){
+  const list = document.getElementById('holdingsList');
+  const empty = document.getElementById('emptyState');
+  const summary = document.getElementById('summary');
+  const tickerWrap = document.getElementById('tickerWrap');
+
+  if(holdings.length === 0){
+    list.innerHTML = '';
+    empty.style.display = 'block';
+    summary.style.display = 'none';
+    tickerWrap.classList.add('empty');
+    return;
+  }
+  empty.style.display = 'none';
+
+  list.innerHTML = holdings.map(h => {
+    const chg = (h.price != null && h.prevClose) ? h.price - h.prevClose : null;
+    const pct = (chg != null && h.prevClose) ? (chg / h.prevClose) * 100 : null;
+    const dir = chg == null ? 'flat' : (chg > 0 ? 'up' : (chg < 0 ? 'down' : 'flat'));
+    const arrow = dir === 'up' ? '▲' : dir === 'down' ? '▼' : '';
+    const sym = currSym(h.currency);
+    const showQty = !isIndex(h.symbol);
+    const value = showQty && h.price != null ? h.qty * h.price : null;
+
+    let priceHtml;
+    if(h.status === 'loading'){
+      priceHtml = `<div class="price-main">…</div>`;
+    } else if(h.status === 'error'){
+      priceHtml = `<div class="price-main">Unavailable</div>`;
+    } else {
+      priceHtml = `<div class="price-main">${sym}${fmtNum(h.price, 2)}</div>
+        <div class="price-change ${dir}">${arrow} ${fmtNum(Math.abs(chg),2)} (${fmtNum(Math.abs(pct),2)}%)</div>`;
+    }
+
+    return `<div class="holding ${h.status}">
+      <div class="holding-top">
+        <div class="holding-id">
+          <div class="holding-symbol">${h.symbol}</div>
+          <div class="holding-name">${h.name}</div>
+        </div>
+        <div class="holding-price">${priceHtml}</div>
+      </div>
+      <div class="holding-bottom">
+        ${showQty ? `<div class="qty-row">Qty <input type="number" min="0" step="any" value="${h.qty}" data-symbol="${h.symbol}" class="qty-input"></div>`
+                   : `<div class="qty-row">Index</div>`}
+        ${value != null ? `<div class="holding-value">${sym}${fmtNum(value,2)}</div>` : ''}
+        <button class="holding-remove" data-remove="${h.symbol}">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('.qty-input').forEach(el=>{
+    el.addEventListener('input', e => updateQty(e.target.dataset.symbol, e.target.value));
+  });
+  list.querySelectorAll('[data-remove]').forEach(el=>{
+    el.addEventListener('click', e => removeHolding(e.target.dataset.remove));
+  });
+
+  renderSummary();
+  renderTicker();
+}
+
+function renderSummary(){
+  const summary = document.getElementById('summary');
+  const lines = document.getElementById('summaryLines');
+  const byCurrency = {};
+  holdings.forEach(h=>{
+    if(isIndex(h.symbol) || h.price == null) return;
+    const c = h.currency || '?';
+    if(!byCurrency[c]) byCurrency[c] = {value:0, prevValue:0};
+    byCurrency[c].value += h.qty * h.price;
+    byCurrency[c].prevValue += h.qty * (h.prevClose ?? h.price);
+  });
+  const currencies = Object.keys(byCurrency);
+  if(currencies.length === 0){ summary.style.display = 'none'; return; }
+  summary.style.display = 'block';
+  lines.innerHTML = currencies.map(c=>{
+    const d = byCurrency[c];
+    const chg = d.value - d.prevValue;
+    const pct = d.prevValue ? (chg/d.prevValue)*100 : 0;
+    const dir = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+    const arrow = dir==='up' ? '▲' : dir==='down' ? '▼' : '';
+    return `<div class="summary-row">
+      <span class="summary-value">${currSym(c)}${fmtNum(d.value,2)}</span>
+      <span class="summary-change ${dir}">${arrow} ${fmtNum(Math.abs(pct),2)}%</span>
+    </div>`;
+  }).join('');
+}
+
+function renderTicker(){
+  const wrap = document.getElementById('tickerWrap');
+  const tape = document.getElementById('tickerTape');
+  const withPrices = holdings.filter(h => h.price != null);
+  if(withPrices.length === 0){ wrap.classList.add('empty'); return; }
+  wrap.classList.remove('empty');
+  const items = withPrices.map(h=>{
+    const chg = h.prevClose ? h.price - h.prevClose : 0;
+    const pct = h.prevClose ? (chg/h.prevClose)*100 : 0;
+    const dir = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+    const arrow = dir==='up' ? '▲' : dir==='down' ? '▼' : '•';
+    return `<span>${h.symbol} ${currSym(h.currency)}${fmtNum(h.price,2)} <span class="${dir}">${arrow} ${fmtNum(Math.abs(pct),2)}%</span></span>`;
+  }).join('');
+  tape.innerHTML = items + items; // duplicate for seamless loop
+}
+
+let searchTimer = null;
+const searchInput = document.getElementById('searchInput');
+const suggestionsEl = document.getElementById('suggestions');
+
+function hideSuggestions(){ suggestionsEl.classList.remove('show'); suggestionsEl.innerHTML=''; }
+
+searchInput.addEventListener('input', (e)=>{
+  const q = e.target.value;
+  clearTimeout(searchTimer);
+  if(!q.trim()){ hideSuggestions(); return; }
+  searchTimer = setTimeout(async ()=>{
+    const results = await searchSymbols(q);
+    if(results.length === 0){ hideSuggestions(); return; }
+    suggestionsEl.innerHTML = results.map(r =>
+      `<div class="suggestion-item" data-symbol="${r.symbol}" data-name="${r.name.replace(/"/g,'&quot;')}">
+        <span class="sug-symbol">${r.symbol}</span><span class="sug-name">${r.name}</span>
+      </div>`).join('');
+    suggestionsEl.querySelectorAll('.suggestion-item').forEach(el=>{
+      el.addEventListener('click', ()=> addHolding(el.dataset.symbol, el.dataset.name));
+    });
+    suggestionsEl.classList.add('show');
+  }, 300);
+});
+
+searchInput.addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    addHolding(searchInput.value, null);
+  }
+});
+
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('.search-wrap')) hideSuggestions();
+});
+
+document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+
+setInterval(refreshAll, 60000);
+loadHoldings();
+</script>
+</body>
+</html>
