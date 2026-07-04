@@ -148,6 +148,36 @@
   .modal-status{font-size:12px; margin-top:12px; min-height:16px;}
   .modal-status.ok{color:var(--gain);}
   .modal-status.err{color:var(--loss);}
+
+  .alert-banner{display:none; margin:0 20px 14px; background:rgba(240,180,41,0.1);
+    border:1px solid var(--amber); border-radius:12px; padding:12px 14px;}
+  .alert-banner.show{display:block;}
+  .alert-banner-head{display:flex; justify-content:space-between; align-items:center;
+    font-size:13px; font-weight:600; color:var(--amber); margin-bottom:6px;}
+  .alert-banner-head button{background:none; border:1px solid var(--amber); color:var(--amber);
+    border-radius:6px; padding:3px 9px; font-size:11px; cursor:pointer;}
+  .alert-banner-item{font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text);
+    padding:3px 0;}
+
+  .alert-badges{display:flex; gap:6px; margin-top:5px; flex-wrap:wrap;}
+  .alert-badge{font-family:'JetBrains Mono',monospace; font-size:10px; padding:2px 7px;
+    border-radius:20px; border:1px solid var(--border); color:var(--text-dim);}
+  .alert-badge.hit{border-color:var(--amber); color:var(--amber); background:rgba(240,180,41,0.12);}
+  .holding.alert-hit{border-color:var(--amber);}
+
+  .bell-btn{background:none; border:none; font-size:15px; cursor:pointer; opacity:0.35;
+    padding:2px 4px;}
+  .bell-btn.active{opacity:1;}
+
+  .alert-panel{display:none; gap:14px; margin-top:10px; padding-top:10px;
+    border-top:1px solid var(--border);}
+  .alert-panel.show{display:flex;}
+  .alert-field{flex:1;}
+  .alert-field label{display:block; font-size:10px; text-transform:uppercase; letter-spacing:0.5px;
+    color:var(--text-dim); margin-bottom:4px;}
+  .alert-field input{width:100%; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:7px; padding:8px 9px; color:var(--text); font-family:'JetBrains Mono',monospace;
+    font-size:13px;}
 </style>
 </head>
 <body>
@@ -175,6 +205,8 @@
     <div class="suggestions" id="suggestions"></div>
   </div>
   <div class="search-hint">US: AAPL · NSE: RELIANCE.NS · BSE: RELIANCE.BO · Indices: ^GSPC, ^NSEI, ^BSESN, ^DJI, ^FTSE, ^N225</div>
+
+  <div class="alert-banner" id="alertBanner"></div>
 
   <div class="holdings" id="holdingsList"></div>
 
@@ -217,8 +249,18 @@
 const CURRENCY_SYMBOLS = {USD:'$', INR:'₹', GBP:'£', EUR:'€', JPY:'¥', HKD:'HK$', CNY:'¥', AUD:'A$', CAD:'C$', SGD:'S$'};
 function currSym(c){ return CURRENCY_SYMBOLS[c] || (c ? c+' ' : ''); }
 
-let holdings = []; // {symbol, name, qty, price, prevClose, currency, status}
+let holdings = []; // {symbol, name, qty, price, prevClose, currency, status, alertHigh, alertLow}
 let saveTimer = null;
+
+function serializeHoldings(){
+  return holdings.map(h => ({
+    symbol: h.symbol,
+    name: h.name,
+    qty: h.qty,
+    alertHigh: h.alertHigh ?? null,
+    alertLow: h.alertLow ?? null
+  }));
+}
 
 const SYNC_KEY = 'ledger_sync_config';
 let syncConfig = null; // {owner, repo, path, token}
@@ -286,11 +328,11 @@ async function pullFromGithub(){
   try{
     const remote = await ghFetchFile();
     if(remote){
-      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, qty:h.qty}));
+      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, qty:h.qty, alertHigh:h.alertHigh ?? null, alertLow:h.alertLow ?? null}));
       render();
       refreshAll();
     } else {
-      await ghPutFile(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty})));
+      await ghPutFile(serializeHoldings());
     }
     setSyncBadge('on', 'Synced ✓');
   }catch(e){
@@ -304,7 +346,7 @@ async function pushToGithub(){
   syncBusy = true;
   setSyncBadge('on', 'Syncing…');
   try{
-    await ghPutFile(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty})));
+    await ghPutFile(serializeHoldings());
     setSyncBadge('on', 'Synced ✓');
   }catch(e){
     console.error(e);
@@ -370,7 +412,7 @@ function persist(){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(()=>{
     try{
-      localStorage.setItem('ledger_holdings', JSON.stringify(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty}))));
+      localStorage.setItem('ledger_holdings', JSON.stringify(serializeHoldings()));
     }catch(e){ console.error('save failed', e); }
     if(syncConfig) pushToGithub();
   }, 250);
@@ -406,6 +448,7 @@ async function refreshAll(){
   await Promise.all(holdings.map(h => refreshOne(h)));
   btn.classList.remove('spinning');
   document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  checkAlerts();
   persist();
 }
 
@@ -413,7 +456,7 @@ function addHolding(symbol, name){
   symbol = symbol.trim().toUpperCase();
   if(!symbol) return;
   if(holdings.find(h => h.symbol === symbol)) return;
-  const h = {symbol, name: name || symbol, qty: 1, status:'loading'};
+  const h = {symbol, name: name || symbol, qty: 1, status:'loading', alertHigh: null, alertLow: null};
   holdings.push(h);
   render();
   persist();
@@ -423,6 +466,8 @@ function addHolding(symbol, name){
 }
 
 function removeHolding(symbol){
+  announcedThisSession.delete(symbol+':high');
+  announcedThisSession.delete(symbol+':low');
   holdings = holdings.filter(h => h.symbol !== symbol);
   render();
   persist();
@@ -431,6 +476,82 @@ function removeHolding(symbol){
 function updateQty(symbol, qty){
   const h = holdings.find(h => h.symbol === symbol);
   if(h){ h.qty = Math.max(0, parseFloat(qty) || 0); render(); persist(); }
+}
+
+const expandedAlertPanels = new Set();
+const announcedThisSession = new Set();
+let activeBanner = [];
+
+function toggleAlertPanel(symbol){
+  if(expandedAlertPanels.has(symbol)) expandedAlertPanels.delete(symbol);
+  else expandedAlertPanels.add(symbol);
+  render();
+}
+
+function updateAlert(symbol, field, value){
+  const h = holdings.find(h => h.symbol === symbol);
+  if(!h) return;
+  const v = value.trim() === '' ? null : parseFloat(value);
+  h[field] = (v == null || isNaN(v)) ? null : v;
+  if('Notification' in window && Notification.permission === 'default' && h[field] != null){
+    Notification.requestPermission();
+  }
+  render();
+  persist();
+  checkAlerts();
+}
+
+function checkAlerts(){
+  const newAlerts = [];
+  holdings.forEach(h=>{
+    if(h.price == null) return;
+    const keyHigh = h.symbol + ':high';
+    const keyLow = h.symbol + ':low';
+    const isHigh = h.alertHigh != null && h.price >= h.alertHigh;
+    const isLow = h.alertLow != null && h.price <= h.alertLow;
+
+    if(isHigh){
+      if(!announcedThisSession.has(keyHigh)){
+        announcedThisSession.add(keyHigh);
+        newAlerts.push({symbol:h.symbol, dir:'above', level:h.alertHigh, price:h.price, currency:h.currency});
+      }
+    } else {
+      announcedThisSession.delete(keyHigh);
+    }
+    if(isLow){
+      if(!announcedThisSession.has(keyLow)){
+        announcedThisSession.add(keyLow);
+        newAlerts.push({symbol:h.symbol, dir:'below', level:h.alertLow, price:h.price, currency:h.currency});
+      }
+    } else {
+      announcedThisSession.delete(keyLow);
+    }
+  });
+  if(newAlerts.length){
+    activeBanner = activeBanner.concat(newAlerts);
+    renderBanner();
+    if('Notification' in window && Notification.permission === 'granted'){
+      newAlerts.forEach(a=>{
+        const sym = currSym(a.currency);
+        new Notification('Ledger price alert', {
+          body: `${a.symbol} is ${a.dir} ${sym}${fmtNum(a.level,2)} — now ${sym}${fmtNum(a.price,2)}`
+        });
+      });
+    }
+  }
+}
+
+function renderBanner(){
+  const el = document.getElementById('alertBanner');
+  if(!el) return;
+  if(activeBanner.length === 0){ el.classList.remove('show'); el.innerHTML=''; return; }
+  el.classList.add('show');
+  el.innerHTML = `<div class="alert-banner-head">🔔 Price alerts<button id="dismissAlertsBtn">Dismiss</button></div>` +
+    activeBanner.map(a=>{
+      const sym = currSym(a.currency);
+      return `<div class="alert-banner-item">${a.symbol} is ${a.dir} target ${sym}${fmtNum(a.level,2)} — now ${sym}${fmtNum(a.price,2)}</div>`;
+    }).join('');
+  document.getElementById('dismissAlertsBtn').addEventListener('click', ()=>{ activeBanner = []; renderBanner(); });
 }
 
 function render(){
@@ -467,11 +588,20 @@ function render(){
         <div class="price-change ${dir}">${arrow} ${fmtNum(Math.abs(chg),2)} (${fmtNum(Math.abs(pct),2)}%)</div>`;
     }
 
-    return `<div class="holding ${h.status}">
+    const hitHigh = h.alertHigh != null && h.price != null && h.price >= h.alertHigh;
+    const hitLow = h.alertLow != null && h.price != null && h.price <= h.alertLow;
+    let badgesHtml = '';
+    if(h.alertHigh != null) badgesHtml += `<span class="alert-badge ${hitHigh?'hit':''}">▲ ${sym}${fmtNum(h.alertHigh,2)}</span>`;
+    if(h.alertLow != null) badgesHtml += `<span class="alert-badge ${hitLow?'hit':''}">▼ ${sym}${fmtNum(h.alertLow,2)}</span>`;
+
+    const panelOpen = expandedAlertPanels.has(h.symbol);
+
+    return `<div class="holding ${h.status} ${(hitHigh||hitLow)?'alert-hit':''}">
       <div class="holding-top">
         <div class="holding-id">
           <div class="holding-symbol">${h.symbol}</div>
           <div class="holding-name">${h.name}</div>
+          ${badgesHtml ? `<div class="alert-badges">${badgesHtml}</div>` : ''}
         </div>
         <div class="holding-price">${priceHtml}</div>
       </div>
@@ -479,7 +609,16 @@ function render(){
         ${showQty ? `<div class="qty-row">Qty <input type="number" min="0" step="any" value="${h.qty}" data-symbol="${h.symbol}" class="qty-input"></div>`
                    : `<div class="qty-row">Index</div>`}
         ${value != null ? `<div class="holding-value">${sym}${fmtNum(value,2)}</div>` : ''}
+        <button class="bell-btn ${(h.alertHigh!=null||h.alertLow!=null)?'active':''}" data-bell="${h.symbol}">🔔</button>
         <button class="holding-remove" data-remove="${h.symbol}">✕</button>
+      </div>
+      <div class="alert-panel ${panelOpen?'show':''}">
+        <div class="alert-field"><label>Alert above</label>
+          <input type="number" step="any" placeholder="off" value="${h.alertHigh ?? ''}" data-alert-symbol="${h.symbol}" data-alert-field="alertHigh">
+        </div>
+        <div class="alert-field"><label>Alert below</label>
+          <input type="number" step="any" placeholder="off" value="${h.alertLow ?? ''}" data-alert-symbol="${h.symbol}" data-alert-field="alertLow">
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -489,6 +628,12 @@ function render(){
   });
   list.querySelectorAll('[data-remove]').forEach(el=>{
     el.addEventListener('click', e => removeHolding(e.target.dataset.remove));
+  });
+  list.querySelectorAll('[data-bell]').forEach(el=>{
+    el.addEventListener('click', e => toggleAlertPanel(e.target.dataset.bell));
+  });
+  list.querySelectorAll('[data-alert-symbol]').forEach(el=>{
+    el.addEventListener('change', e => updateAlert(e.target.dataset.alertSymbol, e.target.dataset.alertField, e.target.value));
   });
 
   renderSummary();
@@ -618,12 +763,12 @@ document.getElementById('connectBtn').addEventListener('click', async ()=>{
   try{
     const remote = await ghFetchFile();
     if(remote && remote.length){
-      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, qty:h.qty}));
+      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, qty:h.qty, alertHigh:h.alertHigh ?? null, alertLow:h.alertLow ?? null}));
     } else {
-      await ghPutFile(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty})));
+      await ghPutFile(serializeHoldings());
     }
     localStorage.setItem(SYNC_KEY, JSON.stringify(cfg));
-    localStorage.setItem('ledger_holdings', JSON.stringify(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty}))));
+    localStorage.setItem('ledger_holdings', JSON.stringify(serializeHoldings()));
     modalStatus.textContent = 'Connected and synced.';
     modalStatus.className = 'modal-status ok';
     updateSyncBadge();
