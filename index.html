@@ -115,13 +115,50 @@
   @keyframes spin{ from{transform:rotate(0deg);} to{transform:rotate(360deg);} }
 
   footer{padding:20px; text-align:center; font-size:10.5px; color:var(--text-dim);}
+
+  .header-right{display:flex; align-items:center; gap:10px;}
+  .sync-badge{font-family:'JetBrains Mono',monospace; font-size:10px; padding:4px 8px;
+    border-radius:20px; border:1px solid var(--border); cursor:pointer; white-space:nowrap;}
+  .sync-badge.on{color:var(--gain); border-color:var(--gain);}
+  .sync-badge.off{color:var(--text-dim);}
+  .sync-badge.error{color:var(--loss); border-color:var(--loss);}
+  .gear-btn{background:none; border:1px solid var(--border); color:var(--text-dim);
+    width:30px; height:30px; border-radius:8px; font-size:14px; cursor:pointer;}
+
+  .modal-overlay{position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100;
+    display:none; align-items:flex-end; justify-content:center;}
+  .modal-overlay.show{display:flex;}
+  .modal-card{background:var(--surface); border:1px solid var(--border);
+    border-radius:16px 16px 0 0; padding:22px 20px 30px; width:100%; max-width:520px;
+    max-height:85vh; overflow-y:auto;}
+  .modal-title{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:17px; margin:0 0 4px;}
+  .modal-sub{font-size:12.5px; color:var(--text-dim); line-height:1.5; margin:0 0 18px;}
+  .modal-sub a{color:var(--amber);}
+  .field{margin-bottom:12px;}
+  .field label{display:block; font-size:11px; text-transform:uppercase; letter-spacing:0.5px;
+    color:var(--text-dim); margin-bottom:5px;}
+  .field input{width:100%; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:8px; padding:11px 12px; color:var(--text); font-size:14px;
+    font-family:'JetBrains Mono',monospace;}
+  .modal-actions{display:flex; gap:10px; margin-top:18px;}
+  .btn{flex:1; padding:12px; border-radius:9px; border:none; font-size:14px; font-weight:600;
+    cursor:pointer; font-family:'Inter',sans-serif;}
+  .btn-primary{background:var(--amber); color:#12161C;}
+  .btn-secondary{background:var(--surface-2); color:var(--text); border:1px solid var(--border);}
+  .modal-status{font-size:12px; margin-top:12px; min-height:16px;}
+  .modal-status.ok{color:var(--gain);}
+  .modal-status.err{color:var(--loss);}
 </style>
 </head>
 <body>
 <div id="app">
   <header>
     <div class="brand">LEDGER<span>.</span></div>
-    <div class="last-updated" id="lastUpdated">—</div>
+    <div class="header-right">
+      <div class="last-updated" id="lastUpdated">—</div>
+      <div class="sync-badge off" id="syncBadge">Not synced</div>
+      <button class="gear-btn" id="gearBtn" title="Sync settings">⚙</button>
+    </div>
   </header>
 
   <div class="ticker-tape-wrap empty" id="tickerWrap">
@@ -149,6 +186,31 @@
   <footer>Prices via Yahoo Finance, may be delayed. Not for trading decisions.</footer>
 </div>
 
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal-card">
+    <div class="modal-title">Sync across devices</div>
+    <p class="modal-sub">
+      Store your holdings in a <strong>private</strong> GitHub repo so every device you open
+      this app on stays in sync. Use a separate private repo for this — not the public one
+      hosting this page — since public repo contents are readable by anyone.<br><br>
+      Create a token at <a href="https://github.com/settings/tokens?type=beta" target="_blank">github.com/settings/tokens</a>
+      (fine-grained) → restrict it to that one private repo → permission "Contents: Read and write".
+    </p>
+    <div class="field"><label>GitHub username</label><input id="cfgOwner" placeholder="yourusername"></div>
+    <div class="field"><label>Private repo name</label><input id="cfgRepo" placeholder="portfolio-data"></div>
+    <div class="field"><label>File path</label><input id="cfgPath" placeholder="portfolio.json" value="portfolio.json"></div>
+    <div class="field"><label>Personal access token</label><input id="cfgToken" type="password" placeholder="github_pat_..."></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="disconnectBtn">Disconnect</button>
+      <button class="btn btn-primary" id="connectBtn">Save & Sync</button>
+    </div>
+    <div class="modal-status" id="modalStatus"></div>
+    <div class="modal-actions" style="margin-top:6px;">
+      <button class="btn btn-secondary" id="closeModalBtn" style="flex:1;">Close</button>
+    </div>
+  </div>
+</div>
+
 <button class="refresh-btn" id="refreshBtn" title="Refresh prices">⟳</button>
 
 <script>
@@ -157,6 +219,99 @@ function currSym(c){ return CURRENCY_SYMBOLS[c] || (c ? c+' ' : ''); }
 
 let holdings = []; // {symbol, name, qty, price, prevClose, currency, status}
 let saveTimer = null;
+
+const SYNC_KEY = 'ledger_sync_config';
+let syncConfig = null; // {owner, repo, path, token}
+let remoteSha = null;
+let syncBusy = false;
+
+function loadSyncConfig(){
+  try{
+    const raw = localStorage.getItem(SYNC_KEY);
+    if(raw) syncConfig = JSON.parse(raw);
+  }catch(e){ syncConfig = null; }
+  updateSyncBadge();
+}
+
+function setSyncBadge(state, label){
+  const el = document.getElementById('syncBadge');
+  el.className = 'sync-badge ' + state;
+  el.textContent = label;
+}
+
+function updateSyncBadge(){
+  if(!syncConfig){ setSyncBadge('off', 'Not synced'); return; }
+  setSyncBadge('on', 'Synced ✓');
+}
+
+function ghUrl(){
+  const {owner, repo, path} = syncConfig;
+  return `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+}
+
+async function ghFetchFile(){
+  const res = await fetch(ghUrl(), {
+    headers:{ Authorization:'token ' + syncConfig.token, Accept:'application/vnd.github+json' }
+  });
+  if(res.status === 404) return null;
+  if(!res.ok) throw new Error('GitHub read failed (' + res.status + ')');
+  const data = await res.json();
+  remoteSha = data.sha;
+  const decoded = decodeURIComponent(escape(atob(data.content.replace(/\n/g, ''))));
+  return JSON.parse(decoded);
+}
+
+async function ghPutFile(list){
+  const body = {
+    message: 'Update portfolio — ' + new Date().toISOString(),
+    content: btoa(unescape(encodeURIComponent(JSON.stringify(list, null, 2))))
+  };
+  if(remoteSha) body.sha = remoteSha;
+  const res = await fetch(ghUrl(), {
+    method:'PUT',
+    headers:{ Authorization:'token ' + syncConfig.token, Accept:'application/vnd.github+json', 'Content-Type':'application/json' },
+    body: JSON.stringify(body)
+  });
+  if(!res.ok){
+    const t = await res.text().catch(()=> '');
+    throw new Error('GitHub save failed (' + res.status + ') ' + t);
+  }
+  const data = await res.json();
+  remoteSha = data.content.sha;
+}
+
+async function pullFromGithub(){
+  if(!syncConfig) return;
+  setSyncBadge('on', 'Syncing…');
+  try{
+    const remote = await ghFetchFile();
+    if(remote){
+      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, qty:h.qty}));
+      render();
+      refreshAll();
+    } else {
+      await ghPutFile(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty})));
+    }
+    setSyncBadge('on', 'Synced ✓');
+  }catch(e){
+    console.error(e);
+    setSyncBadge('error', 'Sync error');
+  }
+}
+
+async function pushToGithub(){
+  if(!syncConfig || syncBusy) return;
+  syncBusy = true;
+  setSyncBadge('on', 'Syncing…');
+  try{
+    await ghPutFile(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty})));
+    setSyncBadge('on', 'Synced ✓');
+  }catch(e){
+    console.error(e);
+    setSyncBadge('error', 'Sync error');
+  }
+  syncBusy = false;
+}
 
 async function fetchJson(url){
   try{
@@ -206,6 +361,9 @@ function loadHoldings(){
   }catch(e){ holdings = []; }
   render();
   refreshAll();
+
+  loadSyncConfig();
+  if(syncConfig) pullFromGithub();
 }
 
 function persist(){
@@ -214,6 +372,7 @@ function persist(){
     try{
       localStorage.setItem('ledger_holdings', JSON.stringify(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty}))));
     }catch(e){ console.error('save failed', e); }
+    if(syncConfig) pushToGithub();
   }, 250);
 }
 
@@ -418,6 +577,78 @@ document.getElementById('refreshBtn').addEventListener('click', refreshAll);
 
 setInterval(refreshAll, 60000);
 loadHoldings();
+
+// --- Settings modal wiring ---
+const modalOverlay = document.getElementById('modalOverlay');
+const modalStatus = document.getElementById('modalStatus');
+
+function openModal(){
+  if(syncConfig){
+    document.getElementById('cfgOwner').value = syncConfig.owner || '';
+    document.getElementById('cfgRepo').value = syncConfig.repo || '';
+    document.getElementById('cfgPath').value = syncConfig.path || 'portfolio.json';
+    document.getElementById('cfgToken').value = syncConfig.token || '';
+  }
+  modalStatus.textContent = '';
+  modalStatus.className = 'modal-status';
+  modalOverlay.classList.add('show');
+}
+function closeModal(){ modalOverlay.classList.remove('show'); }
+
+document.getElementById('gearBtn').addEventListener('click', openModal);
+document.getElementById('syncBadge').addEventListener('click', openModal);
+document.getElementById('closeModalBtn').addEventListener('click', closeModal);
+modalOverlay.addEventListener('click', (e)=>{ if(e.target === modalOverlay) closeModal(); });
+
+document.getElementById('connectBtn').addEventListener('click', async ()=>{
+  const owner = document.getElementById('cfgOwner').value.trim();
+  const repo = document.getElementById('cfgRepo').value.trim();
+  const path = document.getElementById('cfgPath').value.trim() || 'portfolio.json';
+  const token = document.getElementById('cfgToken').value.trim();
+  if(!owner || !repo || !token){
+    modalStatus.textContent = 'Fill in username, repo, and token.';
+    modalStatus.className = 'modal-status err';
+    return;
+  }
+  modalStatus.textContent = 'Connecting…';
+  modalStatus.className = 'modal-status';
+  const cfg = {owner, repo, path, token};
+  syncConfig = cfg;
+  remoteSha = null;
+  try{
+    const remote = await ghFetchFile();
+    if(remote && remote.length){
+      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, qty:h.qty}));
+    } else {
+      await ghPutFile(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty})));
+    }
+    localStorage.setItem(SYNC_KEY, JSON.stringify(cfg));
+    localStorage.setItem('ledger_holdings', JSON.stringify(holdings.map(h=>({symbol:h.symbol,name:h.name,qty:h.qty}))));
+    modalStatus.textContent = 'Connected and synced.';
+    modalStatus.className = 'modal-status ok';
+    updateSyncBadge();
+    render();
+    refreshAll();
+    setTimeout(closeModal, 900);
+  }catch(e){
+    console.error(e);
+    modalStatus.textContent = e.message || 'Could not connect. Check the details and token permissions.';
+    modalStatus.className = 'modal-status err';
+    syncConfig = null;
+  }
+});
+
+document.getElementById('disconnectBtn').addEventListener('click', ()=>{
+  syncConfig = null;
+  remoteSha = null;
+  localStorage.removeItem(SYNC_KEY);
+  document.getElementById('cfgOwner').value = '';
+  document.getElementById('cfgRepo').value = '';
+  document.getElementById('cfgToken').value = '';
+  updateSyncBadge();
+  modalStatus.textContent = 'Disconnected. Holdings now stay local to this device only.';
+  modalStatus.className = 'modal-status';
+});
 </script>
 </body>
 </html>
