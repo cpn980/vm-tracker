@@ -527,18 +527,46 @@ document.addEventListener('touchstart', unlockAudio, {once:true});
 function playAlertSound(){
   if(!audioCtx) return;
   const now = audioCtx.currentTime;
-  [ [880, now, 0.14], [1175, now + 0.16, 0.18] ].forEach(([freq, start, dur])=>{
+  // Louder, sharper 3-note ascending alarm (square wave cuts through more than sine)
+  const notes = [ [740, now, 0.22], [988, now + 0.24, 0.22], [1319, now + 0.48, 0.34] ];
+  notes.forEach(([freq, start, dur])=>{
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
-    osc.type = 'sine';
+    osc.type = 'square';
     osc.frequency.value = freq;
     gain.gain.setValueAtTime(0.0001, start);
-    gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.5, start + 0.015);
     gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
     osc.connect(gain).connect(audioCtx.destination);
     osc.start(start);
     osc.stop(start + dur + 0.02);
   });
+  if(navigator.vibrate) navigator.vibrate([200, 80, 200, 80, 300]);
+}
+
+let alarmInterval = null;
+function startRepeatingAlarm(){
+  stopRepeatingAlarm();
+  playAlertSound();
+  alarmInterval = setInterval(playAlertSound, 2200);
+}
+function stopRepeatingAlarm(){
+  if(alarmInterval){ clearInterval(alarmInterval); alarmInterval = null; }
+}
+
+const originalTitle = document.title;
+let titleFlashInterval = null;
+function startTitleFlash(){
+  stopTitleFlash();
+  let on = false;
+  titleFlashInterval = setInterval(()=>{
+    document.title = on ? originalTitle : '🔔 Price Alert!';
+    on = !on;
+  }, 1000);
+}
+function stopTitleFlash(){
+  if(titleFlashInterval){ clearInterval(titleFlashInterval); titleFlashInterval = null; }
+  document.title = originalTitle;
 }
 
 function showAlertPopup(alerts){
@@ -585,7 +613,8 @@ function checkAlerts(){
   if(newAlerts.length){
     activeBanner = activeBanner.concat(newAlerts);
     renderBanner();
-    playAlertSound();
+    startRepeatingAlarm();
+    startTitleFlash();
     showAlertPopup(newAlerts);
     if('Notification' in window && Notification.permission === 'granted'){
       newAlerts.forEach(a=>{
@@ -816,8 +845,18 @@ document.getElementById('closeModalBtn').addEventListener('click', closeModal);
 modalOverlay.addEventListener('click', (e)=>{ if(e.target === modalOverlay) closeModal(); });
 
 const alertPopupOverlay = document.getElementById('alertPopupOverlay');
-document.getElementById('alertPopupOkBtn').addEventListener('click', ()=> alertPopupOverlay.classList.remove('show'));
-alertPopupOverlay.addEventListener('click', (e)=>{ if(e.target === alertPopupOverlay) alertPopupOverlay.classList.remove('show'); });
+document.getElementById('alertPopupOkBtn').addEventListener('click', ()=>{
+  alertPopupOverlay.classList.remove('show');
+  stopRepeatingAlarm();
+  stopTitleFlash();
+});
+alertPopupOverlay.addEventListener('click', (e)=>{
+  if(e.target === alertPopupOverlay){
+    alertPopupOverlay.classList.remove('show');
+    stopRepeatingAlarm();
+    stopTitleFlash();
+  }
+});
 
 document.getElementById('connectBtn').addEventListener('click', async ()=>{
   const owner = document.getElementById('cfgOwner').value.trim();
