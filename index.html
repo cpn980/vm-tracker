@@ -178,6 +178,13 @@
   .alert-field input{width:100%; background:var(--surface-2); border:1px solid var(--border);
     border-radius:7px; padding:8px 9px; color:var(--text); font-family:'JetBrains Mono',monospace;
     font-size:13px;}
+
+  #alertPopupOverlay{align-items:center;}
+  .popup-card{border-radius:16px; max-width:420px; animation:pop-in 0.18s ease-out;}
+  @keyframes pop-in{ from{transform:scale(0.92); opacity:0;} to{transform:scale(1); opacity:1;} }
+  .alert-popup-list{display:flex; flex-direction:column; gap:8px; margin:14px 0 4px;}
+  .alert-popup-item{font-family:'JetBrains Mono',monospace; font-size:13px;
+    background:var(--surface-2); border:1px solid var(--amber); border-radius:9px; padding:10px 12px;}
 </style>
 </head>
 <body>
@@ -239,6 +246,16 @@
     <div class="modal-status" id="modalStatus"></div>
     <div class="modal-actions" style="margin-top:6px;">
       <button class="btn btn-secondary" id="closeModalBtn" style="flex:1;">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="alertPopupOverlay">
+  <div class="modal-card popup-card">
+    <div class="modal-title">🔔 Price Alert</div>
+    <div id="alertPopupList" class="alert-popup-list"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="alertPopupOkBtn" style="flex:1;">OK</button>
     </div>
   </div>
 </div>
@@ -408,15 +425,29 @@ function loadHoldings(){
   if(syncConfig) pullFromGithub();
 }
 
+function doPersist(){
+  try{
+    localStorage.setItem('ledger_holdings', JSON.stringify(serializeHoldings()));
+  }catch(e){ console.error('save failed', e); }
+  if(syncConfig) pushToGithub();
+}
+
 function persist(){
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(()=>{
-    try{
-      localStorage.setItem('ledger_holdings', JSON.stringify(serializeHoldings()));
-    }catch(e){ console.error('save failed', e); }
-    if(syncConfig) pushToGithub();
-  }, 250);
+  saveTimer = setTimeout(doPersist, 250);
 }
+
+function flushPersist(){
+  clearTimeout(saveTimer);
+  doPersist();
+}
+
+// Make sure any pending edit is saved the moment the tab is backgrounded or closed,
+// not just after the debounce timer — mobile browsers rarely fire beforeunload reliably.
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'hidden') flushPersist();
+});
+window.addEventListener('pagehide', flushPersist);
 
 function isIndex(symbol){ return symbol.startsWith('^'); }
 
@@ -482,23 +513,47 @@ const expandedAlertPanels = new Set();
 const announcedThisSession = new Set();
 let activeBanner = [];
 
+// --- Alert sound (generated tone, no external file, works offline) ---
+let audioCtx = null;
+function unlockAudio(){
+  if(!audioCtx){
+    try{ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){ return; }
+  }
+  if(audioCtx.state === 'suspended') audioCtx.resume();
+}
+document.addEventListener('click', unlockAudio, {once:true});
+document.addEventListener('touchstart', unlockAudio, {once:true});
+
+function playAlertSound(){
+  if(!audioCtx) return;
+  const now = audioCtx.currentTime;
+  [ [880, now, 0.14], [1175, now + 0.16, 0.18] ].forEach(([freq, start, dur])=>{
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(start);
+    osc.stop(start + dur + 0.02);
+  });
+}
+
+function showAlertPopup(alerts){
+  const list = document.getElementById('alertPopupList');
+  list.innerHTML = alerts.map(a=>{
+    const sym = currSym(a.currency);
+    return `<div class="alert-popup-item">${a.symbol} is ${a.dir} target ${sym}${fmtNum(a.level,2)} — now ${sym}${fmtNum(a.price,2)}</div>`;
+  }).join('');
+  document.getElementById('alertPopupOverlay').classList.add('show');
+}
+
 function toggleAlertPanel(symbol){
   if(expandedAlertPanels.has(symbol)) expandedAlertPanels.delete(symbol);
   else expandedAlertPanels.add(symbol);
   render();
-}
-
-function updateAlert(symbol, field, value){
-  const h = holdings.find(h => h.symbol === symbol);
-  if(!h) return;
-  const v = value.trim() === '' ? null : parseFloat(value);
-  h[field] = (v == null || isNaN(v)) ? null : v;
-  if('Notification' in window && Notification.permission === 'default' && h[field] != null){
-    Notification.requestPermission();
-  }
-  render();
-  persist();
-  checkAlerts();
 }
 
 function checkAlerts(){
@@ -530,6 +585,8 @@ function checkAlerts(){
   if(newAlerts.length){
     activeBanner = activeBanner.concat(newAlerts);
     renderBanner();
+    playAlertSound();
+    showAlertPopup(newAlerts);
     if('Notification' in window && Notification.permission === 'granted'){
       newAlerts.forEach(a=>{
         const sym = currSym(a.currency);
@@ -633,7 +690,20 @@ function render(){
     el.addEventListener('click', e => toggleAlertPanel(e.target.dataset.bell));
   });
   list.querySelectorAll('[data-alert-symbol]').forEach(el=>{
-    el.addEventListener('change', e => updateAlert(e.target.dataset.alertSymbol, e.target.dataset.alertField, e.target.value));
+    el.addEventListener('input', e => {
+      const h = holdings.find(h => h.symbol === e.target.dataset.alertSymbol);
+      if(!h) return;
+      const v = e.target.value.trim() === '' ? null : parseFloat(e.target.value);
+      h[e.target.dataset.alertField] = (v == null || isNaN(v)) ? null : v;
+      if('Notification' in window && Notification.permission === 'default' && h[e.target.dataset.alertField] != null){
+        Notification.requestPermission();
+      }
+      persist(); // saved on every keystroke (debounced), so it survives an abrupt close
+    });
+    el.addEventListener('change', e => {
+      render();
+      checkAlerts();
+    });
   });
 
   renderSummary();
@@ -744,6 +814,10 @@ document.getElementById('gearBtn').addEventListener('click', openModal);
 document.getElementById('syncBadge').addEventListener('click', openModal);
 document.getElementById('closeModalBtn').addEventListener('click', closeModal);
 modalOverlay.addEventListener('click', (e)=>{ if(e.target === modalOverlay) closeModal(); });
+
+const alertPopupOverlay = document.getElementById('alertPopupOverlay');
+document.getElementById('alertPopupOkBtn').addEventListener('click', ()=> alertPopupOverlay.classList.remove('show'));
+alertPopupOverlay.addEventListener('click', (e)=>{ if(e.target === alertPopupOverlay) alertPopupOverlay.classList.remove('show'); });
 
 document.getElementById('connectBtn').addEventListener('click', async ()=>{
   const owner = document.getElementById('cfgOwner').value.trim();
