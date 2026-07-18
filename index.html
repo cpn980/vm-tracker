@@ -49,14 +49,6 @@
   .ticker-tape .down{color:var(--loss);}
   @keyframes scroll-left{ from{transform:translateX(0);} to{transform:translateX(-50%);} }
 
-  .summary{padding:20px; display:flex; flex-direction:column; gap:2px;}
-  .summary-row{display:flex; justify-content:space-between; align-items:baseline;
-    font-family:'JetBrains Mono',monospace;}
-  .summary-label{font-family:'Inter',sans-serif; font-size:11px; text-transform:uppercase;
-    letter-spacing:1px; color:var(--text-dim); margin-bottom:6px;}
-  .summary-value{font-size:26px; font-weight:700;}
-  .summary-change{font-size:13px; margin-top:2px;}
-
   .search-wrap{padding:0 20px 8px; position:relative;}
   #searchInput{width:100%; background:var(--surface); border:1px solid var(--border);
     border-radius:10px; padding:13px 14px; color:var(--text); font-size:15px;
@@ -92,13 +84,9 @@
   .up{color:var(--gain);}
   .down{color:var(--loss);}
   .flat{color:var(--text-dim);}
-  .holding-bottom{display:flex; justify-content:space-between; align-items:center;
+  .holding-bottom{display:flex; justify-content:flex-end; align-items:center; gap:10px;
     border-top:1px solid var(--border); padding-top:8px;}
-  .qty-row{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim);}
-  .qty-row input{width:64px; background:var(--surface-2); border:1px solid var(--border);
-    border-radius:6px; padding:5px 7px; color:var(--text); font-family:'JetBrains Mono',monospace;
-    font-size:12px;}
-  .holding-value{font-family:'JetBrains Mono',monospace; font-size:13px; font-weight:600;}
+  .bell-btn{flex:1; text-align:left;}
   .holding.loading .price-main{color:var(--text-dim);}
   .holding.error .price-main{color:var(--loss); font-size:12px; font-weight:500;}
 
@@ -202,11 +190,6 @@
     <div class="ticker-tape" id="tickerTape"></div>
   </div>
 
-  <div class="summary" id="summary" style="display:none;">
-    <div class="summary-label">Portfolio value</div>
-    <div id="summaryLines"></div>
-  </div>
-
   <div class="search-wrap">
     <input id="searchInput" placeholder="Add a stock — AAPL, RELIANCE.NS, ^NSEI…" autocomplete="off">
     <div class="suggestions" id="suggestions"></div>
@@ -266,14 +249,13 @@
 const CURRENCY_SYMBOLS = {USD:'$', INR:'₹', GBP:'£', EUR:'€', JPY:'¥', HKD:'HK$', CNY:'¥', AUD:'A$', CAD:'C$', SGD:'S$'};
 function currSym(c){ return CURRENCY_SYMBOLS[c] || (c ? c+' ' : ''); }
 
-let holdings = []; // {symbol, name, qty, price, prevClose, currency, status, alertHigh, alertLow}
+let holdings = []; // {symbol, name, price, prevClose, currency, status, alertHigh, alertLow}
 let saveTimer = null;
 
 function serializeHoldings(){
   return holdings.map(h => ({
     symbol: h.symbol,
     name: h.name,
-    qty: h.qty,
     alertHigh: h.alertHigh ?? null,
     alertLow: h.alertLow ?? null
   }));
@@ -345,7 +327,7 @@ async function pullFromGithub(){
   try{
     const remote = await ghFetchFile();
     if(remote){
-      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, qty:h.qty, alertHigh:h.alertHigh ?? null, alertLow:h.alertLow ?? null}));
+      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, alertHigh:h.alertHigh ?? null, alertLow:h.alertLow ?? null}));
       render();
       refreshAll();
     } else {
@@ -487,7 +469,7 @@ function addHolding(symbol, name){
   symbol = symbol.trim().toUpperCase();
   if(!symbol) return;
   if(holdings.find(h => h.symbol === symbol)) return;
-  const h = {symbol, name: name || symbol, qty: 1, status:'loading', alertHigh: null, alertLow: null};
+  const h = {symbol, name: name || symbol, status:'loading', alertHigh: null, alertLow: null};
   holdings.push(h);
   render();
   persist();
@@ -502,11 +484,6 @@ function removeHolding(symbol){
   holdings = holdings.filter(h => h.symbol !== symbol);
   render();
   persist();
-}
-
-function updateQty(symbol, qty){
-  const h = holdings.find(h => h.symbol === symbol);
-  if(h){ h.qty = Math.max(0, parseFloat(qty) || 0); render(); persist(); }
 }
 
 const expandedAlertPanels = new Set();
@@ -643,13 +620,11 @@ function renderBanner(){
 function render(){
   const list = document.getElementById('holdingsList');
   const empty = document.getElementById('emptyState');
-  const summary = document.getElementById('summary');
   const tickerWrap = document.getElementById('tickerWrap');
 
   if(holdings.length === 0){
     list.innerHTML = '';
     empty.style.display = 'block';
-    summary.style.display = 'none';
     tickerWrap.classList.add('empty');
     return;
   }
@@ -661,8 +636,6 @@ function render(){
     const dir = chg == null ? 'flat' : (chg > 0 ? 'up' : (chg < 0 ? 'down' : 'flat'));
     const arrow = dir === 'up' ? '▲' : dir === 'down' ? '▼' : '';
     const sym = currSym(h.currency);
-    const showQty = !isIndex(h.symbol);
-    const value = showQty && h.price != null ? h.qty * h.price : null;
 
     let priceHtml;
     if(h.status === 'loading'){
@@ -692,10 +665,7 @@ function render(){
         <div class="holding-price">${priceHtml}</div>
       </div>
       <div class="holding-bottom">
-        ${showQty ? `<div class="qty-row">Qty <input type="number" min="0" step="any" value="${h.qty}" data-symbol="${h.symbol}" class="qty-input"></div>`
-                   : `<div class="qty-row">Index</div>`}
-        ${value != null ? `<div class="holding-value">${sym}${fmtNum(value,2)}</div>` : ''}
-        <button class="bell-btn ${(h.alertHigh!=null||h.alertLow!=null)?'active':''}" data-bell="${h.symbol}">🔔</button>
+        <button class="bell-btn ${(h.alertHigh!=null||h.alertLow!=null)?'active':''}" data-bell="${h.symbol}">🔔 Set alert</button>
         <button class="holding-remove" data-remove="${h.symbol}">✕</button>
       </div>
       <div class="alert-panel ${panelOpen?'show':''}">
@@ -709,9 +679,6 @@ function render(){
     </div>`;
   }).join('');
 
-  list.querySelectorAll('.qty-input').forEach(el=>{
-    el.addEventListener('input', e => updateQty(e.target.dataset.symbol, e.target.value));
-  });
   list.querySelectorAll('[data-remove]').forEach(el=>{
     el.addEventListener('click', e => removeHolding(e.target.dataset.remove));
   });
@@ -735,35 +702,7 @@ function render(){
     });
   });
 
-  renderSummary();
   renderTicker();
-}
-
-function renderSummary(){
-  const summary = document.getElementById('summary');
-  const lines = document.getElementById('summaryLines');
-  const byCurrency = {};
-  holdings.forEach(h=>{
-    if(isIndex(h.symbol) || h.price == null) return;
-    const c = h.currency || '?';
-    if(!byCurrency[c]) byCurrency[c] = {value:0, prevValue:0};
-    byCurrency[c].value += h.qty * h.price;
-    byCurrency[c].prevValue += h.qty * (h.prevClose ?? h.price);
-  });
-  const currencies = Object.keys(byCurrency);
-  if(currencies.length === 0){ summary.style.display = 'none'; return; }
-  summary.style.display = 'block';
-  lines.innerHTML = currencies.map(c=>{
-    const d = byCurrency[c];
-    const chg = d.value - d.prevValue;
-    const pct = d.prevValue ? (chg/d.prevValue)*100 : 0;
-    const dir = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
-    const arrow = dir==='up' ? '▲' : dir==='down' ? '▼' : '';
-    return `<div class="summary-row">
-      <span class="summary-value">${currSym(c)}${fmtNum(d.value,2)}</span>
-      <span class="summary-change ${dir}">${arrow} ${fmtNum(Math.abs(pct),2)}%</span>
-    </div>`;
-  }).join('');
 }
 
 function renderTicker(){
@@ -876,7 +815,7 @@ document.getElementById('connectBtn').addEventListener('click', async ()=>{
   try{
     const remote = await ghFetchFile();
     if(remote && remote.length){
-      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, qty:h.qty, alertHigh:h.alertHigh ?? null, alertLow:h.alertLow ?? null}));
+      holdings = remote.map(h => ({symbol:h.symbol, name:h.name, alertHigh:h.alertHigh ?? null, alertLow:h.alertLow ?? null}));
     } else {
       await ghPutFile(serializeHoldings());
     }
