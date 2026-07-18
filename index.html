@@ -104,6 +104,30 @@
 
   footer{padding:20px; text-align:center; font-size:10.5px; color:var(--text-dim);}
 
+  .tabs{display:flex; gap:6px; padding:14px 20px 6px;}
+  .tab-btn{flex:1; background:var(--surface); border:1px solid var(--border); color:var(--text-dim);
+    padding:10px; border-radius:9px; font-family:'Inter',sans-serif; font-weight:600; font-size:13px;
+    cursor:pointer;}
+  .tab-btn.active{background:var(--amber); color:#12161C; border-color:var(--amber);}
+  .tab-panel{display:none;}
+  .tab-panel.active{display:block;}
+
+  .portfolio-list{padding:0 20px; display:flex; flex-direction:column; gap:10px; margin-top:6px;}
+  .p-card{background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:14px;}
+  .p-top{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;}
+  .p-id .holding-symbol{font-family:'JetBrains Mono',monospace; font-weight:700; font-size:15px;}
+  .p-id .holding-name{font-size:11.5px; color:var(--text-dim); margin-top:1px;}
+  .p-grid{display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; align-items:end;}
+  .p-field label{display:block; font-size:10px; text-transform:uppercase; letter-spacing:0.5px;
+    color:var(--text-dim); margin-bottom:4px;}
+  .p-field input{width:100%; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:7px; padding:8px 8px; color:var(--text); font-family:'JetBrains Mono',monospace;
+    font-size:12.5px;}
+  .p-current{font-family:'JetBrains Mono',monospace;}
+  .p-current .price-main{font-size:15px; font-weight:700;}
+  .p-since{font-family:'JetBrains Mono',monospace; font-size:11.5px; margin-top:3px;}
+
   .header-right{display:flex; align-items:center; gap:10px;}
   .sync-badge{font-family:'JetBrains Mono',monospace; font-size:10px; padding:4px 8px;
     border-radius:20px; border:1px solid var(--border); cursor:pointer; white-space:nowrap;}
@@ -190,19 +214,41 @@
     <div class="ticker-tape" id="tickerTape"></div>
   </div>
 
-  <div class="search-wrap">
-    <input id="searchInput" placeholder="Add a stock — AAPL, RELIANCE.NS, ^NSEI…" autocomplete="off">
-    <div class="suggestions" id="suggestions"></div>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="watchlist">Watchlist</button>
+    <button class="tab-btn" data-tab="portfolio">Portfolio</button>
   </div>
-  <div class="search-hint">US: AAPL · NSE: RELIANCE.NS · BSE: RELIANCE.BO · Indices: ^GSPC, ^NSEI, ^BSESN, ^DJI, ^FTSE, ^N225</div>
 
-  <div class="alert-banner" id="alertBanner"></div>
+  <div class="tab-panel active" id="watchlistTab">
+    <div class="search-wrap">
+      <input id="searchInput" placeholder="Add a stock — AAPL, RELIANCE.NS, ^NSEI…" autocomplete="off">
+      <div class="suggestions" id="suggestions"></div>
+    </div>
+    <div class="search-hint">US: AAPL · NSE: RELIANCE.NS · BSE: RELIANCE.BO · Indices: ^GSPC, ^NSEI, ^BSESN, ^DJI, ^FTSE, ^N225</div>
 
-  <div class="holdings" id="holdingsList"></div>
+    <div class="alert-banner" id="alertBanner"></div>
 
-  <div class="empty-state" id="emptyState">
-    <div class="glyph">＄</div>
-    <p>No stocks yet.<br>Search above to add your first holding.</p>
+    <div class="holdings" id="holdingsList"></div>
+
+    <div class="empty-state" id="emptyState">
+      <div class="glyph">＄</div>
+      <p>No stocks yet.<br>Search above to add your first holding.</p>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="portfolioTab">
+    <div class="search-wrap">
+      <input id="portfolioSearchInput" placeholder="Add a stock — AAPL, RELIANCE.NS…" autocomplete="off">
+      <div class="suggestions" id="portfolioSuggestions"></div>
+    </div>
+    <div class="search-hint">Logs the stock, today's date as the recommendation date, and today's price as the reference price — all editable.</div>
+
+    <div class="portfolio-list" id="portfolioList"></div>
+
+    <div class="empty-state" id="portfolioEmptyState">
+      <div class="glyph">＄</div>
+      <p>No recommendations logged yet.<br>Search above to add one.</p>
+    </div>
   </div>
 
   <footer>Prices via Yahoo Finance, may be delayed. Not for trading decisions.</footer>
@@ -266,6 +312,13 @@ let syncConfig = null; // {owner, repo, path, token}
 let remoteSha = null;
 let syncBusy = false;
 
+const PORTFOLIO_KEY = 'ledger_portfolio_list';
+const PORTFOLIO_PATH = 'portfolio-list.json';
+let portfolio = []; // {symbol, name, date, refPrice, price, prevClose, currency, status}
+let portfolioSha = null;
+let portfolioSyncBusy = false;
+let portfolioSaveTimer = null;
+
 function loadSyncConfig(){
   try{
     const raw = localStorage.getItem(SYNC_KEY);
@@ -285,30 +338,30 @@ function updateSyncBadge(){
   setSyncBadge('on', 'Synced ✓');
 }
 
-function ghUrl(){
-  const {owner, repo, path} = syncConfig;
+function ghUrl(path){
+  const {owner, repo} = syncConfig;
   return `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
 }
 
-async function ghFetchFile(){
-  const res = await fetch(ghUrl(), {
+async function ghFetchFile(path, shaSetter){
+  const res = await fetch(ghUrl(path), {
     headers:{ Authorization:'token ' + syncConfig.token, Accept:'application/vnd.github+json' }
   });
   if(res.status === 404) return null;
   if(!res.ok) throw new Error('GitHub read failed (' + res.status + ')');
   const data = await res.json();
-  remoteSha = data.sha;
+  shaSetter(data.sha);
   const decoded = decodeURIComponent(escape(atob(data.content.replace(/\n/g, ''))));
   return JSON.parse(decoded);
 }
 
-async function ghPutFile(list){
+async function ghPutFile(path, list, sha, shaSetter){
   const body = {
-    message: 'Update portfolio — ' + new Date().toISOString(),
+    message: 'Update ' + path + ' — ' + new Date().toISOString(),
     content: btoa(unescape(encodeURIComponent(JSON.stringify(list, null, 2))))
   };
-  if(remoteSha) body.sha = remoteSha;
-  const res = await fetch(ghUrl(), {
+  if(sha) body.sha = sha;
+  const res = await fetch(ghUrl(path), {
     method:'PUT',
     headers:{ Authorization:'token ' + syncConfig.token, Accept:'application/vnd.github+json', 'Content-Type':'application/json' },
     body: JSON.stringify(body)
@@ -318,20 +371,29 @@ async function ghPutFile(list){
     throw new Error('GitHub save failed (' + res.status + ') ' + t);
   }
   const data = await res.json();
-  remoteSha = data.content.sha;
+  shaSetter(data.content.sha);
 }
 
 async function pullFromGithub(){
   if(!syncConfig) return;
   setSyncBadge('on', 'Syncing…');
   try{
-    const remote = await ghFetchFile();
+    const remote = await ghFetchFile(syncConfig.path, sha => remoteSha = sha);
     if(remote){
       holdings = remote.map(h => ({symbol:h.symbol, name:h.name, alertHigh:h.alertHigh ?? null, alertLow:h.alertLow ?? null}));
       render();
       refreshAll();
     } else {
-      await ghPutFile(serializeHoldings());
+      await ghPutFile(syncConfig.path, serializeHoldings(), remoteSha, sha => remoteSha = sha);
+    }
+
+    const remotePortfolio = await ghFetchFile(PORTFOLIO_PATH, sha => portfolioSha = sha);
+    if(remotePortfolio){
+      portfolio = remotePortfolio;
+      renderPortfolio();
+      refreshAllPortfolio();
+    } else {
+      await ghPutFile(PORTFOLIO_PATH, portfolio, portfolioSha, sha => portfolioSha = sha);
     }
     setSyncBadge('on', 'Synced ✓');
   }catch(e){
@@ -345,13 +407,27 @@ async function pushToGithub(){
   syncBusy = true;
   setSyncBadge('on', 'Syncing…');
   try{
-    await ghPutFile(serializeHoldings());
+    await ghPutFile(syncConfig.path, serializeHoldings(), remoteSha, sha => remoteSha = sha);
     setSyncBadge('on', 'Synced ✓');
   }catch(e){
     console.error(e);
     setSyncBadge('error', 'Sync error');
   }
   syncBusy = false;
+}
+
+async function pushPortfolioToGithub(){
+  if(!syncConfig || portfolioSyncBusy) return;
+  portfolioSyncBusy = true;
+  setSyncBadge('on', 'Syncing…');
+  try{
+    await ghPutFile(PORTFOLIO_PATH, portfolio, portfolioSha, sha => portfolioSha = sha);
+    setSyncBadge('on', 'Synced ✓');
+  }catch(e){
+    console.error(e);
+    setSyncBadge('error', 'Sync error');
+  }
+  portfolioSyncBusy = false;
 }
 
 async function fetchJson(url){
@@ -419,9 +495,32 @@ function persist(){
   saveTimer = setTimeout(doPersist, 250);
 }
 
+function loadPortfolio(){
+  try{
+    const raw = localStorage.getItem(PORTFOLIO_KEY);
+    if(raw){ portfolio = JSON.parse(raw); }
+  }catch(e){ portfolio = []; }
+  renderPortfolio();
+  refreshAllPortfolio();
+}
+
+function doPersistPortfolio(){
+  try{
+    localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(portfolio));
+  }catch(e){ console.error('save failed', e); }
+  if(syncConfig) pushPortfolioToGithub();
+}
+
+function persistPortfolio(){
+  clearTimeout(portfolioSaveTimer);
+  portfolioSaveTimer = setTimeout(doPersistPortfolio, 250);
+}
+
 function flushPersist(){
   clearTimeout(saveTimer);
   doPersist();
+  clearTimeout(portfolioSaveTimer);
+  doPersistPortfolio();
 }
 
 // Make sure any pending edit is saved the moment the tab is backgrounded or closed,
@@ -484,6 +583,121 @@ function removeHolding(symbol){
   holdings = holdings.filter(h => h.symbol !== symbol);
   render();
   persist();
+}
+
+// --- Portfolio (recommendation log) tab ---
+async function refreshOnePortfolio(p){
+  p.status = 'loading';
+  renderPortfolio();
+  try{
+    const q = await fetchQuote(p.symbol);
+    p.price = q.price;
+    p.prevClose = q.prevClose;
+    p.currency = q.currency;
+    if(!p.name || p.name === p.symbol) p.name = q.name;
+    if(p.refPrice == null) p.refPrice = q.price; // first successful fetch seeds the reference price
+    p.status = 'ok';
+  }catch(e){
+    p.status = 'error';
+  }
+  renderPortfolio();
+}
+
+async function refreshAllPortfolio(){
+  if(portfolio.length === 0) return;
+  await Promise.all(portfolio.map(p => refreshOnePortfolio(p)));
+  persistPortfolio();
+}
+
+function addPortfolioEntry(symbol, name){
+  symbol = symbol.trim().toUpperCase();
+  if(!symbol) return;
+  if(portfolio.find(p => p.symbol === symbol)) return;
+  const today = new Date().toISOString().slice(0,10);
+  const p = {symbol, name: name || symbol, date: today, refPrice: null, status:'loading'};
+  portfolio.push(p);
+  renderPortfolio();
+  persistPortfolio();
+  refreshOnePortfolio(p);
+  document.getElementById('portfolioSearchInput').value = '';
+  hidePortfolioSuggestions();
+}
+
+function removePortfolioEntry(symbol){
+  portfolio = portfolio.filter(p => p.symbol !== symbol);
+  renderPortfolio();
+  persistPortfolio();
+}
+
+function updatePortfolioField(symbol, field, value){
+  const p = portfolio.find(p => p.symbol === symbol);
+  if(!p) return;
+  if(field === 'date'){
+    p.date = value;
+  } else if(field === 'refPrice'){
+    const v = value.trim() === '' ? null : parseFloat(value);
+    p.refPrice = (v == null || isNaN(v)) ? null : v;
+  }
+  persistPortfolio();
+}
+
+function renderPortfolio(){
+  const list = document.getElementById('portfolioList');
+  const empty = document.getElementById('portfolioEmptyState');
+
+  if(portfolio.length === 0){
+    list.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  list.innerHTML = portfolio.map(p=>{
+    const sym = currSym(p.currency);
+    let priceHtml;
+    if(p.status === 'loading'){
+      priceHtml = `<div class="price-main">…</div>`;
+    } else if(p.status === 'error'){
+      priceHtml = `<div class="price-main">Unavailable</div>`;
+    } else {
+      priceHtml = `<div class="price-main">${sym}${fmtNum(p.price, 2)}</div>`;
+    }
+
+    let sinceHtml = '';
+    if(p.price != null && p.refPrice != null && p.refPrice !== 0){
+      const chg = p.price - p.refPrice;
+      const pct = (chg / p.refPrice) * 100;
+      const dir = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+      const arrow = dir==='up' ? '▲' : dir==='down' ? '▼' : '';
+      sinceHtml = `<div class="p-since ${dir}">${arrow} ${fmtNum(Math.abs(pct),2)}% since ${p.date}</div>`;
+    }
+
+    return `<div class="p-card">
+      <div class="p-top">
+        <div class="p-id">
+          <div class="holding-symbol">${p.symbol}</div>
+          <div class="holding-name">${p.name}</div>
+        </div>
+        <div class="p-current">${priceHtml}${sinceHtml}</div>
+      </div>
+      <div class="p-grid">
+        <div class="p-field"><label>Rec. date</label>
+          <input type="date" value="${p.date}" data-p-symbol="${p.symbol}" data-p-field="date">
+        </div>
+        <div class="p-field"><label>Rec. price</label>
+          <input type="number" step="any" placeholder="—" value="${p.refPrice ?? ''}" data-p-symbol="${p.symbol}" data-p-field="refPrice">
+        </div>
+        <button class="holding-remove" data-p-remove="${p.symbol}" style="justify-self:end;">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('[data-p-remove]').forEach(el=>{
+    el.addEventListener('click', e => removePortfolioEntry(e.target.dataset.pRemove));
+  });
+  list.querySelectorAll('[data-p-symbol]').forEach(el=>{
+    el.addEventListener('change', e => updatePortfolioField(e.target.dataset.pSymbol, e.target.dataset.pField, e.target.value));
+  });
 }
 
 const expandedAlertPanels = new Set();
@@ -752,14 +966,57 @@ searchInput.addEventListener('keydown', (e)=>{
   }
 });
 
-document.addEventListener('click', (e)=>{
-  if(!e.target.closest('.search-wrap')) hideSuggestions();
+let portfolioSearchTimer = null;
+const portfolioSearchInput = document.getElementById('portfolioSearchInput');
+const portfolioSuggestionsEl = document.getElementById('portfolioSuggestions');
+
+function hidePortfolioSuggestions(){ portfolioSuggestionsEl.classList.remove('show'); portfolioSuggestionsEl.innerHTML=''; }
+
+portfolioSearchInput.addEventListener('input', (e)=>{
+  const q = e.target.value;
+  clearTimeout(portfolioSearchTimer);
+  if(!q.trim()){ hidePortfolioSuggestions(); return; }
+  portfolioSearchTimer = setTimeout(async ()=>{
+    const results = await searchSymbols(q);
+    if(results.length === 0){ hidePortfolioSuggestions(); return; }
+    portfolioSuggestionsEl.innerHTML = results.map(r =>
+      `<div class="suggestion-item" data-symbol="${r.symbol}" data-name="${r.name.replace(/"/g,'&quot;')}">
+        <span class="sug-symbol">${r.symbol}</span><span class="sug-name">${r.name}</span>
+      </div>`).join('');
+    portfolioSuggestionsEl.querySelectorAll('.suggestion-item').forEach(el=>{
+      el.addEventListener('click', ()=> addPortfolioEntry(el.dataset.symbol, el.dataset.name));
+    });
+    portfolioSuggestionsEl.classList.add('show');
+  }, 300);
 });
 
-document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+portfolioSearchInput.addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    addPortfolioEntry(portfolioSearchInput.value, null);
+  }
+});
 
-setInterval(refreshAll, 60000);
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('#watchlistTab .search-wrap')) hideSuggestions();
+  if(!e.target.closest('#portfolioTab .search-wrap')) hidePortfolioSuggestions();
+});
+
+document.getElementById('refreshBtn').addEventListener('click', ()=>{ refreshAll(); refreshAllPortfolio(); });
+
+setInterval(()=>{ refreshAll(); refreshAllPortfolio(); }, 60000);
 loadHoldings();
+loadPortfolio();
+
+// --- Tab switching ---
+document.querySelectorAll('.tab-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab + 'Tab').classList.add('active');
+  });
+});
 
 // --- Settings modal wiring ---
 const modalOverlay = document.getElementById('modalOverlay');
@@ -812,20 +1069,32 @@ document.getElementById('connectBtn').addEventListener('click', async ()=>{
   const cfg = {owner, repo, path, token};
   syncConfig = cfg;
   remoteSha = null;
+  portfolioSha = null;
   try{
-    const remote = await ghFetchFile();
+    const remote = await ghFetchFile(path, sha => remoteSha = sha);
     if(remote && remote.length){
       holdings = remote.map(h => ({symbol:h.symbol, name:h.name, alertHigh:h.alertHigh ?? null, alertLow:h.alertLow ?? null}));
     } else {
-      await ghPutFile(serializeHoldings());
+      await ghPutFile(path, serializeHoldings(), remoteSha, sha => remoteSha = sha);
     }
+
+    const remotePortfolio = await ghFetchFile(PORTFOLIO_PATH, sha => portfolioSha = sha);
+    if(remotePortfolio && remotePortfolio.length){
+      portfolio = remotePortfolio;
+    } else {
+      await ghPutFile(PORTFOLIO_PATH, portfolio, portfolioSha, sha => portfolioSha = sha);
+    }
+
     localStorage.setItem(SYNC_KEY, JSON.stringify(cfg));
     localStorage.setItem('ledger_holdings', JSON.stringify(serializeHoldings()));
+    localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(portfolio));
     modalStatus.textContent = 'Connected and synced.';
     modalStatus.className = 'modal-status ok';
     updateSyncBadge();
     render();
     refreshAll();
+    renderPortfolio();
+    refreshAllPortfolio();
     setTimeout(closeModal, 900);
   }catch(e){
     console.error(e);
@@ -838,12 +1107,13 @@ document.getElementById('connectBtn').addEventListener('click', async ()=>{
 document.getElementById('disconnectBtn').addEventListener('click', ()=>{
   syncConfig = null;
   remoteSha = null;
+  portfolioSha = null;
   localStorage.removeItem(SYNC_KEY);
   document.getElementById('cfgOwner').value = '';
   document.getElementById('cfgRepo').value = '';
   document.getElementById('cfgToken').value = '';
   updateSyncBadge();
-  modalStatus.textContent = 'Disconnected. Holdings now stay local to this device only.';
+  modalStatus.textContent = 'Disconnected. Data now stays local to this device only.';
   modalStatus.className = 'modal-status';
 });
 </script>
